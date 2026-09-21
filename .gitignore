@@ -1,1 +1,7 @@
+**/media/*
+**/db.sqlite3
 **/__pycache__
+**/migrations
+**/.pytest_cache
+**/build
+

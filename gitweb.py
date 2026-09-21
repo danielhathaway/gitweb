@@ -8,11 +8,7 @@ See:
 Details:
     Forms created by this module have CSRF protection
 
-
-### !!! ISSUES: !!! ###
-
 ### !!! TODO: Need to pull all repos in list when the app starts, and when repo is selected !!! ###
-### !!! Consider not rendering .git files for security !!! ###
 
 """
 
@@ -21,81 +17,23 @@ Details:
 import secrets
 from datetime import datetime
 import os
-import tempfile
-import shutil
-import base64
-import re
-from pathlib import Path
 from flask import Flask, request, redirect, url_for, session, flash, get_flashed_messages
 from flask_wtf import FlaskForm
 from flask_wtf.csrf import CSRFProtect, CSRFError
-from wtforms import StringField, SubmitField, TextAreaField
-from wtforms.validators import DataRequired
 from markupsafe import escape
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives import padding
-from markupsafe import escape
-
-
-
-def generate_aes_key(key_size:int = 256) -> bytes:
-    ## Generate secure keys for AES
-    if key_size == 128: return secrets.token_bytes(16)  # 16 bytes for AES-128
-    elif key_size == 192: return secrets.token_bytes(24)  # 24 bytes for AES-192
-    elif key_size == 256: return secrets.token_bytes(32)  # 32 bytes for AES-256
-    else: raise ValueError('The key size must be 128, 192, or 256')
-
-
-
-def encrypt_aes(plaintext:str, key:bytes = None) -> str:
-    ## Determine if a key needs to be generated:
-    key_provided = False
-    if key == None: key = generate_aes_key()
-    else: key_provided = True
-
-    ## Pad plaintext to be a multiple of block size:
-    padder = padding.PKCS7(algorithms.AES.block_size).padder()
-    padded_data = padder.update(plaintext.encode()) + padder.finalize()
-
-    ## Create AES cipher in ECB mode:
-    cipher = Cipher(algorithms.AES(key), modes.ECB(), backend=default_backend())
-    encryptor = cipher.encryptor()
-    ciphertext = encryptor.update(padded_data) + encryptor.finalize()
-
-    ## Return Base64 encoded ciphertext:
-    output = base64.b64encode(ciphertext).decode()
-    if key_provided: return output
-    else: return (output, key)
-
-
-
-def decrypt_aes(ciphertext:str, key:bytes) -> str:
-    ## Decode Base64 encoded ciphertext:
-    ciphertext = base64.b64decode(ciphertext)
-
-    ## Create AES cipher in ECB mode:
-    cipher = Cipher(algorithms.AES(key), modes.ECB(), backend=default_backend())
-    decryptor = cipher.decryptor()
-    padded_data = decryptor.update(ciphertext) + decryptor.finalize()
-
-    ## Unpad the data:
-    unpadder = padding.PKCS7(algorithms.AES.block_size).unpadder()
-    plaintext = unpadder.update(padded_data) + unpadder.finalize()
-
-    return plaintext.decode()
-
-
-
-def is_child_of_dir(path:str, dir:str) -> bool:
-    ## Normalize the target path:
-    path = os.path.abspath(path)
-    ## Normalize the directory path:
-    dir = os.path.abspath(dir)
-    ## Check if target_path starts with directory and ensure proper trailing slash handling:
-    if path == dir or path.startswith(dir + os.sep) or path.startswith(dir + '/'):
-        return True
-    return False
+from chempy.files import (
+    is_child_of_dir,
+    dir_contents,
+    parent_path,
+    file_read,
+    file_safe_write,
+    file_name,
+    sanitize_path,
+    file_exists
+)
+from chempy.cloak import encrypt_aes, decrypt_aes, generate_aes_key
+from chempy.conf import read_conf
+from chempy.pysub import shsub
 
 
 
@@ -118,104 +56,11 @@ def dtstr() -> str:
 
 
 
-def dir_contents(path:str = '.', filenames_only:bool = False) -> list[str]:
-    path = os.path.abspath(path)
-    items = []
-    with os.scandir(path) as library:
-        for item in library:
-            items.append(item.path)
-    return items
-
-
-
-def parent_path(path:str = '.') -> str:
-    path = os.path.abspath(path)
-    path_components = path.rsplit(os.sep, 1)
-    parent_path = path_components[0]
-    if parent_path == '':
-        return os.sep
-    return parent_path
-
-
-
-def file_read(path:str, hex:bool = False, fallback_hex:bool = True, fallback:bool = True) -> str:
-    if hex:
-        try:
-            with open(path, 'rb') as file: contents = file.read()
-            return contents.hex()
-        except:
-            #raise
-            return None
-    try:
-        with open(path, 'r') as file: contents = file.read()
-        return contents
-    except:
-        if fallback: pass
-        else:
-            #raise
-            return None
-    try:
-        with open(path, 'rb') as file: contents = file.read()
-        if fallback_hex: contents = contents.hex()
-        return contents
-    except:
-        #raise
-        return None
-
-
-
-def file_safe_write(path:str, contents:str, encoding:str = 'utf-8'):
-    """
-    Writes content to a file atomically to prevent data corruption.
-    """
-    target_path = Path(path)
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode='w',
-            encoding=encoding,
-            dir=target_path.parent,
-            delete=False,
-            suffix='.tmp'
-        ) as tmp_file:
-            tmp_file.write(contents)
-            tmp_file.flush()
-            os.fsync(tmp_file.fileno())
-            temp_path = tmp_file.name
-        shutil.move(temp_path, target_path)
-        return True
-    except:
-        return False
-
-
-def filename(path:str) -> str:
-    return os.path.basename(path)
-
-
-
 def get_messages():
     messages = get_flashed_messages()
     if len(messages) > 0: messages = ''.join(messages)
     else: messages = ''
     return messages
-
-
-
-def sanitize_path(path:str, replacement_char:str = '') -> str:
-    """
-    Cleans a path so it's a valid and safe path for any OS.
-    """
-    invalid_chars = r'[ <>;"\'`!@#$%^&*{}|,+=?\x00-\x1f]'
-    try:
-        sep_cleaned = re.sub(r'\\', '/', path)
-        sanitized = re.sub(invalid_chars, replacement_char, sep_cleaned)
-        stripped = sanitized.strip(' .')
-        normalized = os.path.normpath(stripped)
-        absolute = os.path.abspath(normalized)
-        return absolute
-    except:
-        return None
 
 
 
@@ -337,10 +182,10 @@ def target_handler(target:str):
 
 def back_handler():
     current_path = get_current_path()
-    parent_path = parent_path(current_path)
+    path = parent_path(current_path)
     current_repo = get_current_repo()
-    if is_child_of_dir(parent_path, current_repo):
-        set_current_path(parent_path)
+    if is_child_of_dir(path, current_repo):
+        set_current_path(path)
         return redirect(url_for('browse'))
     else:
         return invalid_handler()
@@ -369,31 +214,47 @@ class BrowseForm(FlaskForm):
 
 
 class FileEditForm(FlaskForm):
-    #submit = SubmitField('submit')
-
     ## This object just needs to be instantiated to use it's CSRF token functionalty.
     ## Python requires at least one indented line after the class declaration:
     unused_variable = 0
 
 
 
-repo_list = ['C:/Users/User/Desktop', 'C:/Users/User/Desktop/Test']
+## App Configuration
+
+## Load values from .conf file:
+conf = read_conf('./gitweb.conf')
+if conf == None or 'repo_list' not in conf:
+    print('YOU NEED TO SPECIFY A "repo_list" in "./gitweb.conf"!')
+    exit(1)
+
+repo_list = conf['repo_list'].split(', ')
 ## Ensure all repo entries are proper paths that exist:
 for i in range(len(repo_list)):
     repo_list[i] = sanitize_path(repo_list[i])
-    if not os.path.exists(repo_list[i]):
+    ## Remove path from 'repo_list' if it doesn't exist:
+    if not file_exists(repo_list[i]):
         del repo_list[i]
-## Unused now:
-#current_repo = ''
-app = Flask(__name__)
-app.secret_key = secrets.token_hex()
-csrf = CSRFProtect(app)
-## This doesn't seem to work, at least on the dev server:
-#app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16 MB
-svg_size = 30
+
+
+### TODO: Pull all repos in 'repo_list"
+
+
+## Set the size of SVG images
+if 'svg_size' in conf:
+    svg_size = conf['svg_size']
+else:
+    svg_size = 30
+
 ## Generate AES encryption key for session data at rest:
 try: session_key = generate_aes_key()
 except: exit(1)
+
+
+
+app = Flask(__name__)
+app.secret_key = secrets.token_hex()
+csrf = CSRFProtect(app)
 
 
 
@@ -412,6 +273,12 @@ def html_head(page_title:str = None):
 
 
 
+@app.route('/')
+def index():
+    return redirect(url_for('repos'))
+
+
+
 @app.route('/repos', methods=['GET', 'POST'])
 def repos():
     form = ReposForm()
@@ -419,7 +286,7 @@ def repos():
     buttons = ''
     for repo in repo_list:
         masked = clean_encrypt(repo)
-        buttons += f'<button name="submit" type="submit" value="{masked}" class="btn file-btn">{repo_svg()}{filename(repo)}</button>\n'
+        buttons += f'<button name="submit" type="submit" value="{masked}" class="btn file-btn">{repo_svg()}{file_name(repo)}</button>\n'
     messages = get_messages()
     page_contents = f'''<!DOCTYPE html>
     <html>
@@ -447,6 +314,7 @@ def repos():
     return page_contents
 
 
+
 @app.route('/browse', methods=['GET', 'POST'])
 def browse():
     form = BrowseForm()
@@ -466,7 +334,7 @@ def browse():
         icon = file_svg()
         if os.path.isdir(file): icon = dir_svg()
         masked = clean_encrypt(file)
-        buttons += f'<button name="submit" type="submit" value="{masked}" class="btn file-btn">{icon}{filename(file)}</button>\n'
+        buttons += f'<button name="submit" type="submit" value="{masked}" class="btn file-btn">{icon}{file_name(file)}</button>\n'
     if buttons == '':
         buttons = '<p>This directory is empty.</p>'
     page_contents = f'''<!DOCTYPE html>
@@ -493,6 +361,7 @@ def browse():
     return page_contents
 
 
+
 @app.route('/edit', methods=['GET', 'POST'])
 def edit():
     form = FileEditForm()
@@ -514,11 +383,19 @@ def edit():
                 <div class="form-container">
                     <form method="POST">
                         <div class="header-container">
-                            <h2>{filename(path)}</h2>
+                            <h2>{file_name(path)}</h2>
                         </div>
                         {messages}
                         {form.hidden_tag()}
                         <input id="commit-message" name="commit-message" type="text" value="GitWeb {dtstr()}" required>
+                        <label>
+                            <input id="commit" name="commit" type="checkbox" value="True">
+                            Commit changes
+                        </label>
+                        <label>
+                            <input id="push" name="push" type="checkbox" value="True">
+                            Push changes
+                        </label>
                         <textarea id="edited-contents" name="edited-contents">{escape(file_contents)}</textarea>
                         <button id="submit" name="submit" type="submit" value="{masked}" class="btn save-btn submit-btn">Save</button>
                     </form>
@@ -530,7 +407,7 @@ def edit():
             </div>
         </body>
     </html>'''
-    print(str(request.form))
+
     if request.method == 'POST' and form.validate_on_submit():
         target = target_aquisition(request)
         if target == 'Back':
@@ -540,33 +417,39 @@ def edit():
             if file_safe_write(path, contents):
                 alert(message = 'File saved!')
 
+                if 'commit' in request.form:
+                    ## Add, commit, and push changes to the repo:
+                    response = shsub(f'git -C {get_current_repo()} add {get_current_path()}')
+                    if response['code'] != 0:
+                        alert(False, f'Staging changes failed! {response['output']}')
 
-
-
-                """## Add, commit, and push changes to the repo:
-                exit_code = os.system(f'git -C {get_current_repo()} add {get_current_path()}')
-                if exit_code != 0: alert(False, 'Staging changes failed!')
-                else:
-                    exit_code = os.system(f'git -C {get_current_repo()} commit -m {escape(request.form["commit-message"])}')
-                    if exit_code != 0:
-                        ## Unstage changes on failed commit
-                        os.system(f'git -C {get_current_repo()} reset HEAD')
-                        alert(False, 'Committing changes failed!')
                     else:
-                        exit_code = os.system(f'git -C {get_current_repo()} push')
-                        if exit_code != 0:
-                            ## Undo last commit on failed push
-                            os.system(f'git -C {get_current_repo()} --soft HEAD~1')
-                            alert(False, 'Pushing changes failed!')
-                        else: alert(message = 'Repo successfully updated!')"""
+                        response = shsub(f'git -C {get_current_repo()} commit -m "{escape(request.form["commit-message"])}"')
+                        if response['code'] != 0:
+                            ## Unstage changes on failed commit
+                            response = shsub(f'git -C {get_current_repo()} reset HEAD')
+                            alert(False, f'Committing changes failed! {response['output']}')
 
+                        else:
+                            if 'push' in request.form:
+                                response = shsub(f'git -C {get_current_repo()} push')
+                                if response['code'] != 0:
+                                    ## Undo last commit on failed push
+                                    response = shsub(f'git -C {get_current_repo()} reset --soft HEAD~1')
+                                    alert(False, f'Pushing changes failed! {response['output']}')
 
+                                else:
+                                    alert(message = 'Changes successfully pushed!')
 
+                            else:
+                                alert(message = 'Changes successfully committed!')
 
                 return redirect(url_for('edit'))
+
             else:
                 alert(False)
                 return redirect(url_for('edit'))
+
     return page_contents
 
 
@@ -708,6 +591,20 @@ style = '''
         resize: vertical;
     }
 
+    input[type="checkbox"] {
+        width: auto;
+        margin: 0 6px 0 0;
+        padding: 0;
+        vertical-align: middle;
+    }
+
+    label {
+        display: inline-flex;
+        align-items: center;
+        margin-right: 16px;
+        color: #495057;
+    }
+
     .btn {
         border: none;
         padding: 12px 10px;
@@ -801,4 +698,4 @@ style = '''
 
 
 if __name__ == '__main__':
-    os.system('flask --app gitweb run')
+    shsub('flask --app gitweb run')
